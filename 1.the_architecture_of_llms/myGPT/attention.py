@@ -8,17 +8,18 @@ from torch import nn
 class CasualSelfAttention(nn.Module):
     def __init__(self,config):
         super(CasualSelfAttention, self).__init__()
-        self.n_head = config.n_heads
+        self.n_head = config.n_head
         self.n_embd = config.n_embd
         self.dropout = config.dropout
         self.attn = nn.Linear(self.n_embd, self.n_embd * 3, bias=False) # put Q, K, V together in one linear layer 
         self.proj = nn.Linear(self.n_embd,self.n_embd, bias=False)
         self.attn_dropout = nn.Dropout(self.dropout)
         self.resid_dropout = nn.Dropout(self.dropout)
-        self.register_buffer("mask", torch.tril(torch.ones(config.block_size, config.block_size)).view(1, 1, config.block_size, config.block_size)) # create a causal mask for self-attention
+        # it's confusion to using bias in the attention layer, but we need to use it to make the code compatible with the original GPT implementation
+        self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size)).view(1, 1, config.block_size, config.block_size)) # create a causal mask for self-attention
 
     def forward(self,x):
-        B,T,C = x.size() # B: batch size, T: sequence length, C: embedding dimension
+        B,T,C = x.size() # B: batch size, T: sequence length, C: embedding dimension（n_embd）
         q,k,v = self.attn(x).split(self.n_embd, dim=-1) # split the output of the linear layer into Q, K, V
         # turn q,k,v to (B, n_head, T, head_size)
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) 
@@ -33,11 +34,11 @@ class CasualSelfAttention(nn.Module):
         # 1 0 0
         # 1 1 0
         # 1 1 1
-        attn_score = attn_score.masked_fill(self.mask[:,:,:T,:T] == 0, float('-inf'))
+        attn_score = attn_score.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
         # the last dimension represents the keys that each query position can attend to.
-        # q1k1, q1k2, q1k3
-        # q2k1, q2k2, q2k3
-        # q3k1, q3k2, q3k3
+        # q1k1, q1k2, q1k3      q1k1, 0, 0
+        # q2k1, q2k2, q2k3 ->   q2k1, q2k2, 0
+        # q3k1, q3k2, q3k3      q3k1, q3k2, q3k3
         attn_score = torch.softmax(attn_score, dim=-1)
         attn_score = self.attn_dropout(attn_score)
         y = attn_score @ v # (B, n_head, T, head_size)
